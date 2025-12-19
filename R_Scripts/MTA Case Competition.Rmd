@@ -1,0 +1,209 @@
+
+---
+output: pdf_document
+---
+
+```{r message=FALSE}
+library(readr)
+library(dplyr)
+library(plm)
+library(fixest)
+```
+
+
+```{r}
+CalculatePositionGainedPoints <- function(start_column_name,end_column_name,data){
+  
+  data$PositionGainedPoints <- data[[start_column_name]] - data[[end_column_name]];
+  
+  return(data)
+}
+
+```
+
+
+```{r}
+FindingFastestLap <- function(lap_col, data) {
+  data$LapDuration <- lubridate::as.duration(data[[lap_col]])
+  fastest <- data %>%
+    dplyr::group_by(Year, Round) %>%
+    dplyr::slice_min(order_by = LapDuration, n = 1, with_ties = FALSE) %>%
+    dplyr::ungroup()
+  return(fastest)
+}
+
+CalculateFastestLapPoints <- function(Racerinformation, data){
+  data$FastestLapPoints <- 0
+  for (i in 1:nrow(Racerinformation)){
+    for (j in 1:nrow(data)){
+      if (Racerinformation$DriverNumber[i] == data$DriverNumber[j] && Racerinformation$Year[i] == data$Year[j] && Racerinformation$Round[i] == data$Round[j]){
+        data$FastestLapPoints[j] <- 10
+        break;
+      }
+    }
+  }
+  
+  return(data)
+}
+```
+
+```{r}
+CalculateStatusPoints <- function(data){
+  data$StatusPoints <- 0
+  for(i in 1:nrow(data)){
+    if(data$Status[i] == "DNF" || data$Status[i] == "Disqualified"){
+      data$StatusPoints[i] <- -20
+    }
+  }
+  return(data)
+}
+```
+
+```{r}
+CalculateQualificationPoints <- function(data){
+  QualifyingPointsTable <- c(10,9,8,7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0,0)
+  data$QualificationPoints <- 0
+  for(i in 1:nrow(data)){
+    position <- data$GridPosition[i]
+    data$QualificationPoints[i] <- QualifyingPointsTable[position]
+  }
+  return(data)
+}
+```
+
+
+```{r message=FALSE}
+RaceResult <- read_csv("Data/RaceResult.csv")
+laps <- read_csv("Data/laps.csv")
+```
+
+```{r}
+RaceResult <- CalculateQualificationPoints(RaceResult)
+RaceResult <- CalculatePositionGainedPoints("GridPosition", "Position", data= RaceResult)
+RaceResult <- CalculateStatusPoints(RaceResult)
+FastestLaps <- FindingFastestLap("LapTime",laps)
+RaceResult <- CalculateFastestLapPoints(FastestLaps,RaceResult)
+```
+
+
+```{r echo=FALSE}
+RaceResult$TotalPoints <- RaceResult$QualificationPoints + RaceResult$Points + RaceResult$PositionGainedPoints + RaceResult$StatusPoints + RaceResult$FastestLapPoints
+```
+
+```{r}
+assign_points <- function(position, points_table) {
+  return(points_table[as.character(position)] %||% 0)
+}
+```
+
+
+```{r message=FALSE}
+DriverPrice <- read_csv("Data/DriverPrice.csv")
+```
+
+```{r}
+ExpectedPoints<- function(DriverData, RaceData){
+  DriverData$ExpectedPoints <- 0
+  for (i in 1:nrow(DriverData)) {
+   CurrentDriver <- filter(RaceData, DriverCode == DriverData$DriverCode[i]) 
+   DriverData$ExpectedPoints[i] <- mean(CurrentDriver$TotalPoints)
+  }
+  return(DriverData)
+}
+
+TotalPoints<- function(DriverData, RaceData){
+  DriverData$ExpectedPoints <- 0
+  for (i in 1:nrow(DriverData)) {
+   CurrentDriver <- filter(RaceData, DriverCode == DriverData$DriverCode[i]) 
+   DriverData$ExpectedPoints[i] <- sum(CurrentDriver$TotalPoints)
+  }
+  return(DriverData)
+}
+
+VariancePoints<- function(DriverData, RaceData){
+  DriverData$VariancePoints <- 0
+  for (i in 1:nrow(DriverData)) {
+   CurrentDriver <- filter(RaceData, DriverCode == DriverData$DriverCode[i]) 
+   DriverData$VariancePoints[i] <- sqrt(var(CurrentDriver$TotalPoints))
+  }
+  return(DriverData)
+}
+
+Score <- function(DriverData){
+  DriverData$Score <- DriverData$ExpectedPoints/DriverData$Price
+  return(DriverData)
+}
+```
+
+
+```{r}
+DriverPrice <- ExpectedPoints(DriverPrice, RaceResult)
+DriverPrice<- VariancePoints(DriverPrice,RaceResult)
+DriverPrice <- Score(DriverPrice)
+```
+
+
+```{r message=FALSE}
+RecentRaces <- read_csv("Data/RecentRaces.csv")
+RecentDriverPrice <- read_csv("Data/DriverPrice.csv")
+
+
+RecentRaces <- CalculateQualificationPoints(RecentRaces)
+RecentRaces <- CalculatePositionGainedPoints("GridPosition", "Position", data= RecentRaces)
+RecentRaces <- CalculateStatusPoints(RecentRaces)
+RecentFastestLaps <- FindingFastestLap("LapTime",laps)
+RecentRaces <- CalculateFastestLapPoints(RecentFastestLaps,RecentRaces)
+
+
+RecentRaces$TotalPoints <- RecentRaces$QualificationPoints + RecentRaces$Points + RecentRaces$PositionGainedPoints + RecentRaces$StatusPoints + RecentRaces$FastestLapPoints
+
+RecentDriverPrice <- ExpectedPoints(RecentDriverPrice, RecentRaces)
+RecentDriverPrice <- VariancePoints(RecentDriverPrice,RecentRaces)
+RecentDriverPrice <- Score(RecentDriverPrice)
+RecentDriverPrice
+```
+
+
+```{r}
+m_pos <- feols(Position ~ 1 | DriverName + TeamName + EventName, data = RaceResult)
+driver_fe_pos <- fixef(m_pos)$DriverName
+sort(driver_fe_pos)
+```
+
+
+```{r}
+m_pts <- feols(Points ~ 1 | DriverName + TeamName + EventName, data = RaceResult)
+
+driver_fe_pts <- fixef(m_pts)$DriverName
+sort(driver_fe_pts, decreasing = TRUE)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+write.csv(RaceResult, "PointsCalculations.csv", row.names = FALSE)
+write.csv(DriverPrice, "ScoreCalculations.csv", row.names = FALSE)
+write.csv(RecentRaces, "RecentPointsCalculations.csv", row.names = FALSE)
+write.csv(RecentDriverPrice, "RecentScoreCalculations.csv", row.names = FALSE)
+
+
+driver_fe_pts_df <- data.frame(
+  Driver = names(driver_fe_pts),
+  points = as.numeric(driver_fe_pts)
+)
+
+
+driver_fe_pos_df <- data.frame(
+  Driver = names(driver_fe_pos),
+  position = as.numeric(driver_fe_pos)
+)
+write.csv(driver_fe_pts_df, "driver_pts_fixed_effects.csv", row.names = FALSE)
+write.csv(driver_fe_pos_df, "driver_pos_fixed_effects.csv", row.names = FALSE)
+```
+
